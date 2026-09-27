@@ -1,0 +1,87 @@
+VERSION ""
+
+NS_ :
+    NS_DESC_
+    CM_
+    BA_DEF_
+    BA_
+    VAL_
+    CAT_DEF_
+    CAT_
+    FILTER
+    BA_DEF_DEF_
+    EV_DATA_
+    ENVVAR_DATA_
+    SGTYPE_
+    SGTYPE_VAL_
+    BA_DEF_SGTYPE_
+    BA_SGTYPE_
+    SIG_TYPE_REF_
+    VAL_TABLE_
+    SIG_GROUP_
+    SIG_VALTYPE_
+    SIGTYPE_VALTYPE_
+    BO_TX_BU_
+    BA_DEF_REL_
+    BA_REL_
+    BA_DEF_DEF_REL_
+    BU_SG_REL_
+    BU_EV_REL_
+    BU_BO_REL_
+    SG_MUL_VAL_
+
+BS_:
+
+BU_: ENGINE_ECU AVIONICS_GCS DIGITAL_TWIN
+
+BO_ 256 ENGINE_CORE_STATUS: 8 ENGINE_ECU
+ SG_ Engine_RPM : 0|16@1+ (0.25,0) [0|8000] "rpm" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Throttle_Pct : 16|8@1+ (0.5,0) [0|100] "%" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Fuel_Flow_gps : 24|16@1+ (0.001,0) [0|20] "g/s" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Engine_Status_Flags : 40|8@1+ (1,0) [0|255] "" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Rolling_Counter : 48|4@1+ (1,0) [0|15] "" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Checksum : 52|4@1+ (1,0) [0|15] "" AVIONICS_GCS,DIGITAL_TWIN
+
+BO_ 257 ENGINE_CYL_EGT: 8 ENGINE_ECU
+ SG_ EGT_Cyl1 : 0|16@1+ (0.1,0) [0|1200] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ EGT_Cyl2 : 16|16@1+ (0.1,0) [0|1200] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ EGT_Cyl3 : 32|16@1+ (0.1,0) [0|1200] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ EGT_Cyl4 : 48|16@1+ (0.1,0) [0|1200] "degC" AVIONICS_GCS,DIGITAL_TWIN
+
+BO_ 258 ENGINE_CYL_CHT: 8 ENGINE_ECU
+ SG_ CHT_Cyl1 : 0|16@1+ (0.1,0) [0|400] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ CHT_Cyl2 : 16|16@1+ (0.1,0) [0|400] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ CHT_Cyl3 : 32|16@1+ (0.1,0) [0|400] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ CHT_Cyl4 : 48|16@1+ (0.1,0) [0|400] "degC" AVIONICS_GCS,DIGITAL_TWIN
+
+BO_ 259 ENGINE_LUBRICATION_FLIGHT: 8 ENGINE_ECU
+ SG_ Oil_Pressure_bar : 0|16@1+ (0.001,0) [0|10] "bar" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Oil_Temperature_C : 16|16@1+ (0.1,-40) [-40|200] "degC" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Airspeed_mps : 32|16@1+ (0.1,0) [0|150] "m/s" AVIONICS_GCS,DIGITAL_TWIN
+ SG_ Altitude_m : 48|16@1+ (0.5,0) [0|10000] "m" AVIONICS_GCS,DIGITAL_TWIN
+
+CM_ BO_ 256 "Primary engine powertrain status transmitted at 10 Hz containing crankshaft speed, throttle command, fuel flow, and safety integrity counter.";
+CM_ SG_ 256 Engine_RPM "Measured crankshaft rotational speed. Resolution 0.25 RPM.";
+CM_ SG_ 256 Throttle_Pct "Current throttle actuator position in percent. Resolution 0.5%.";
+CM_ SG_ 256 Fuel_Flow_gps "Total fuel mass flow rate across injector rail. Resolution 0.001 g/s.";
+CM_ SG_ 256 Engine_Status_Flags "ECU status bitfield: Bit 0=Warning Active, Bit 1=Redline Exceeded, Bit 2=Sensor Fault, Bit 3=Limp Home.";
+CM_ SG_ 256 Rolling_Counter "Rolling alive sequence counter (0-15) for frame loss and stall detection.";
+CM_ SG_ 256 Checksum "Cyclic redundancy nibble checksum protecting frame integrity.";
+
+CM_ BO_ 257 "Per-cylinder exhaust gas temperature (EGT) transmitted at 10 Hz from Type-K exhaust thermocouples.";
+CM_ SG_ 257 EGT_Cyl1 "Exhaust Gas Temperature for Cylinder 1. Resolution 0.1 degC.";
+CM_ SG_ 257 EGT_Cyl2 "Exhaust Gas Temperature for Cylinder 2. Resolution 0.1 degC.";
+CM_ SG_ 257 EGT_Cyl3 "Exhaust Gas Temperature for Cylinder 3. Resolution 0.1 degC.";
+CM_ SG_ 257 EGT_Cyl4 "Exhaust Gas Temperature for Cylinder 4. Resolution 0.1 degC.";
+
+CM_ BO_ 258 "Per-cylinder cylinder head temperature (CHT) transmitted at 10 Hz from PT100 RTD sensors.";
+CM_ SG_ 258 CHT_Cyl1 "Cylinder Head Temperature for Cylinder 1. Resolution 0.1 degC.";
+CM_ SG_ 258 CHT_Cyl2 "Cylinder Head Temperature for Cylinder 2. Resolution 0.1 degC.";
+CM_ SG_ 258 CHT_Cyl3 "Cylinder Head Temperature for Cylinder 3. Resolution 0.1 degC.";
+CM_ SG_ 258 CHT_Cyl4 "Cylinder Head Temperature for Cylinder 4. Resolution 0.1 degC.";
+
+CM_ BO_ 259 "Lubrication circuit and aerodynamic flight reference telemetry transmitted at 10 Hz.";
+CM_ SG_ 259 Oil_Pressure_bar "Engine oil pump hydraulic gauge pressure. Resolution 0.001 bar.";
+CM_ SG_ 259 Oil_Temperature_C "Main sump oil temperature. Offset -40 degC, Resolution 0.1 degC.";
+CM_ SG_ 259 Airspeed_mps "Pitot-static indicated airspeed (IAS) in meters/second. Resolution 0.1 m/s.";
+CM_ SG_ 259 Altitude_m "Barometric pressure altitude in meters above sea level. Resolution 0.5 m.";
