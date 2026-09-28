@@ -1,0 +1,17 @@
+# UAV Aero Piston Engine Digital Twin - Core Dependencies
+# Python >= 3.9, < 3.13 recommended
+
+# Numerical and Data Processing
+numpy>=1.24.0,<2.0.0
+pandas>=2.0.0,<3.0.0
+
+# Machine Learning & Prognostics
+scikit-learn>=1.3.0
+joblib>=1.3.0
+
+# Visualization & Telemetry Plotting
+matplotlib>=3.7.0
+
+# Avionics CAN Bus Protocol
+python-can>=4.2.0
+cantools>=39.0.0

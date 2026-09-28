@@ -35,6 +35,7 @@ import os
 import sys
 import glob
 import logging
+import warnings
 from typing import Dict, Any, List, Optional, Tuple
 
 import joblib
@@ -225,7 +226,9 @@ class RULEstimator:
         path = model_path or os.path.join(MODEL_DIR, "rul_models.joblib")
         if not os.path.exists(path):
             raise FileNotFoundError(f"Model file not found at: {path}")
-        pkg = joblib.load(path)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            pkg = joblib.load(path)
         self.model = pkg["model"]
         self.is_trained = True
 

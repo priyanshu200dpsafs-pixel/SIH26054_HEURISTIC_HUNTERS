@@ -151,21 +151,26 @@ class TestAeroEnginePlant(unittest.TestCase):
     def test_dataset_generation(self):
         """Batch generation must output valid CSVs, manifest, and non-empty rows."""
         import json
-        temp_data_dir = "/tmp/uav_test_data"
-        res = generate_synthetic_dataset(num_runs=3, output_dir=temp_data_dir, seed=42)
-        self.assertEqual(res["runs_generated"], 3)
-        self.assertTrue(os.path.exists(res["manifest_path"]))
+        import tempfile
+        import shutil
+        temp_data_dir = tempfile.mkdtemp(prefix="uav_test_data_")
+        try:
+            res = generate_synthetic_dataset(num_runs=3, output_dir=temp_data_dir, seed=42)
+            self.assertEqual(res["runs_generated"], 3)
+            self.assertTrue(os.path.exists(res["manifest_path"]))
 
-        # Read first run dynamically from manifest
-        with open(res["manifest_path"], "r") as f:
-            manifest = json.load(f)
-        runs_list = manifest["runs"] if isinstance(manifest, dict) and "runs" in manifest else manifest
-        first_filename = runs_list[0]["filename"]
-        run_file = os.path.join(temp_data_dir, first_filename)
-        self.assertTrue(os.path.exists(run_file))
-        df_run = pd.read_csv(run_file)
-        self.assertGreater(len(df_run), 100)
-        self.assertFalse(df_run.isnull().values.any(), "Generated dataset must not contain NaN values")
+            # Read first run dynamically from manifest
+            with open(res["manifest_path"], "r") as f:
+                manifest = json.load(f)
+            runs_list = manifest["runs"] if isinstance(manifest, dict) and "runs" in manifest else manifest
+            first_filename = runs_list[0]["filename"]
+            run_file = os.path.join(temp_data_dir, first_filename)
+            self.assertTrue(os.path.exists(run_file))
+            df_run = pd.read_csv(run_file)
+            self.assertGreater(len(df_run), 100)
+            self.assertFalse(df_run.isnull().values.any(), "Generated dataset must not contain NaN values")
+        finally:
+            shutil.rmtree(temp_data_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":

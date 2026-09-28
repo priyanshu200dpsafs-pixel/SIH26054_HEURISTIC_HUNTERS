@@ -44,85 +44,31 @@ logger = logging.getLogger("EnginePlant")
 
 
 # =============================================================================
-# 1. ENGINE SPECIFICATIONS & PHYSICAL CONSTANTS
+# 1. CORE PHYSICS PRIMITIVES (Imported from physics_core)
 # =============================================================================
-@dataclass
-class EngineSpecs:
-    """
-    Physical and operational specifications for a Rotax 912 ULS-class UAV engine.
-    Every constant here is verifiable against standard aero piston manuals.
-    """
-    engine_name: str = "Rotax 912-Class Aero Boxer 4-Cylinder"
-    num_cylinders: int = 4
-    displacement_cc: float = 1211.0          # 1.211 Liters
-    max_power_hp: float = 100.0              # 73.5 kW at sea-level WOT
-    idle_rpm: float = 1600.0                 # Minimum ground/flight idle
-    max_rpm: float = 5800.0                  # Maximum takeoff continuous RPM
-    cruise_rpm: float = 5000.0               # Standard 75% throttle cruise RPM
+try:
+    from .physics_core import (
+        EngineSpecs,
+        isa_atmosphere,
+        compute_target_rpm,
+        compute_target_fuel_flow,
+        compute_nominal_egt_base,
+        compute_nominal_cht_base,
+        compute_target_oil_temp,
+        compute_target_oil_press,
+    )
+except ImportError:
+    from physics_core import (
+        EngineSpecs,
+        isa_atmosphere,
+        compute_target_rpm,
+        compute_target_fuel_flow,
+        compute_nominal_egt_base,
+        compute_nominal_cht_base,
+        compute_target_oil_temp,
+        compute_target_oil_press,
+    )
 
-    # Nominal Thermal Boundaries (as per hackathon requirements & Rotax manual)
-    cht_min_c: float = 150.0                 # Normal minimum operating CHT
-    cht_max_c: float = 230.0                 # Redline cylinder head temperature
-    egt_min_c: float = 650.0                 # Normal low-throttle EGT
-    egt_max_c: float = 950.0                 # Upper safety redline EGT
-    
-    oil_press_min_bar: float = 1.8           # Low idle limit
-    oil_press_max_bar: float = 5.0           # Relief valve regulated pressure
-    oil_temp_min_c: float = 70.0             # Normal minimum warm oil temp
-    oil_temp_max_c: float = 115.0            # High continuous limit
-
-    # Time Constants (Thermal & Mechanical Inertia)
-    # Why: Engine metal, coolant, and oil have finite heat capacity (m * Cp).
-    # Instantaneous step changes in combustion take seconds to heat up cylinder heads.
-    tau_rpm_sec: float = 0.55                # Rotational inertia of crankshaft + propeller
-    tau_egt_sec: float = 1.8                 # Fast gas-exchange & thermocouple lag
-    tau_cht_sec: float = 12.0                # Large thermal inertia of aluminum cylinder head
-    tau_oil_temp_sec: float = 35.0           # High thermal mass of 3.5L circulating oil sump
-    tau_oil_press_sec: float = 0.4           # Hydraulic propagation time
-
-    # Cylinder-to-Cylinder Geometry Bias (Degrees C)
-    # Why: In a boxer aero engine, cylinders 3 & 4 sit behind cylinders 1 & 2 in the
-    # cowl airflow, so they receive slightly pre-warmed ram air and run ~3-6°C hotter.
-    cyl_cht_bias: Tuple[float, ...] = (-2.5, -1.0, +2.5, +3.5)
-    cyl_egt_bias: Tuple[float, ...] = (-5.0, +3.0, +6.0, -4.0)
-
-
-# =============================================================================
-# 2. ATMOSPHERIC MODEL (ISA: International Standard Atmosphere)
-# =============================================================================
-def isa_atmosphere(altitude_m: float) -> Tuple[float, float, float, float]:
-    """
-    Computes ambient temperature, pressure, density, and relative density
-    at a given geopotential altitude using standard ISA tropospheric lapse equations.
-
-    Why this matters to judges:
-      - Naturally aspirated aero engines breathe air whose density rho decreases with altitude.
-      - Mass of oxygen per stroke = V_disp * rho_air * volumetric_efficiency.
-      - Less oxygen -> less fuel can be burned -> less power -> lower equilibrium RPM.
-      - Thinner air -> lower convective heat transfer coefficient (h ~ rho^0.8) -> reduced cooling.
-
-    Returns:
-      (T_amb_k, P_amb_pa, rho_amb_kg_m3, sigma)
-      where sigma = rho / rho_0 (sea-level density ratio).
-    """
-    T0 = 288.15        # Sea-level standard temp in Kelvin (15°C)
-    P0 = 101325.0      # Sea-level standard pressure in Pascals
-    rho0 = 1.225       # Sea-level air density in kg/m^3
-    lapse_rate = 0.0065 # Troposphere lapse rate: 6.5 K per 1000m
-    g0 = 9.80665       # Gravitational acceleration m/s^2
-    R_air = 287.05     # Specific gas constant for dry air J/(kg*K)
-
-    # Altitude clamp to valid troposphere (< 11,000 m; MALE UAVs operate up to 6,000-8,000m)
-    alt = max(0.0, min(float(altitude_m), 10000.0))
-
-    T_amb_k = T0 - lapse_rate * alt
-    # Barometric formula: P = P0 * (1 - L*h / T0) ^ (g0 / (R * L))
-    exponent = g0 / (R_air * lapse_rate)  # ~5.25588
-    P_amb_pa = P0 * math.pow(T_amb_k / T0, exponent)
-    rho_amb = P_amb_pa / (R_air * T_amb_k)
-    sigma = rho_amb / rho0
-
-    return T_amb_k, P_amb_pa, rho_amb, sigma
 
 
 # =============================================================================
@@ -428,11 +374,7 @@ class AeroEnginePlant:
 
         # --- Step 2: RPM Dynamics & Fault Power Deficit ---
         power_deficit = fault_phys_state.get("power_deficit_factor", 0.0)
-        # Target RPM: realistic Rotax 912 power curve (cruise 4800-5100 RPM, climb 5500-5800 RPM)
-        th_curve = 0.20 * th_norm + 0.80 * math.pow(th_norm, 0.85)
-        rpm_target_nominal = self.specs.idle_rpm + (
-            self.specs.max_rpm - self.specs.idle_rpm
-        ) * th_curve * math.pow(sigma, 0.70)
+        rpm_target_nominal = compute_target_rpm(th_norm, sigma, self.specs)
 
         # Physical power reduction directly depresses attainable RPM
         rpm_target = rpm_target_nominal * (1.0 - 0.65 * power_deficit)
@@ -443,11 +385,7 @@ class AeroEnginePlant:
         self.rpm = float(np.clip(self.rpm + d_rpm, 1200.0, 6000.0))
 
         # --- Step 3: Fuel Flow Dynamics ---
-        # Baseline total fuel flow rate (g/s)
-        # 100 HP @ 270 g/kWh -> ~5.5 g/s at sea level WOT; ~0.85 g/s at idle
-        ff_idle = 0.85
-        ff_max = 5.60
-        ff_target_total = ff_idle + (ff_max - ff_idle) * math.pow(th_norm, 1.1) * sigma
+        ff_target_total = compute_target_fuel_flow(th_norm, sigma)
         
         # Per-cylinder fuel allocation with injector clogs
         clog_rates = fault_phys_state.get("injector_clog_pct", [0.0, 0.0, 0.0, 0.0])
@@ -461,29 +399,16 @@ class AeroEnginePlant:
         self.fuel_flow_gps = float(sum(cyl_fuel_flows))
 
         # --- Step 4: Per-Cylinder EGT ---
-        # Base EGT driven by combustion energy release and mixture enrichment
-        # Low power idle ~680°C, cruise ~810-840°C, climb ~870-890°C (nominal range 650-950°C)
-        egt_base = 675.0 + 195.0 * math.pow(th_norm, 0.85) + 30.0 * (1.0 - sigma)
+        egt_base = compute_nominal_egt_base(th_norm, sigma)
 
         for i in range(4):
             clog = clog_rates[i]
-            # Injector clog lean-burn peak physics:
-            # Rotax 912 cruise runs slightly rich-of-peak (lambda ~ 0.88).
-            # As injector clogs (severity 18% to 52%), local mixture shifts lean towards stoichiometric (lambda -> 1.0).
-            # This causes EGT to spike into the yellow caution band (880-920°C) and approach the 950°C redline
-            # as an urgent warning signal before critical RUL expiration.
-            # Thermodynamically, stoichiometric adiabatic flame temperature caps the exhaust port gas at ~948°C.
             if clog <= 0.45:
                 delta_egt_clog = 115.0 * (clog / 0.45)  # Can add up to +115°C at peak lean
             else:
-                # Slight reduction as mixture leans beyond stoichiometric towards misfire limit
                 excess = (clog - 0.45) / 0.55
                 delta_egt_clog = 115.0 * (1.0 - 1.2 * excess)
 
-            # Cap target EGT at stoichiometric adiabatic flame ceiling (942.0°C)
-            # Under pre-failure lean burn, EGT spikes into yellow caution (880-920°C) and reaches
-            # 942-948°C (at redline) as an urgent warning signal before critical RUL, but never
-            # unphysically runs away above the 950°C safety redline.
             egt_target_raw = egt_base + self.specs.cyl_egt_bias[i] + delta_egt_clog
             egt_target_i = min(942.0, egt_target_raw)
             
@@ -492,27 +417,15 @@ class AeroEnginePlant:
             self.egt[i] = float(np.clip(self.egt[i] + d_egt, 550.0, 950.0))
 
         # --- Step 5: Per-Cylinder CHT ---
-        # Convective ram-air cooling factor: higher IAS & air density increases cooling
-        # Cooling blockage fault impairs convective heat dissipation
         cowl_blockage = fault_phys_state.get("cooling_blockage_pct", 0.0)
         cooling_airspeed_effective = ias * (1.0 - 0.75 * cowl_blockage)
-        
-        # Rotax 912 cylinder heads have coolant circuit with ~130°C thermostat baseline,
-        # yielding operating CHT of 150-165°C at idle, 175-195°C at cruise, and 205-225°C at climb.
-        cht_baseline_c = 154.0
-        delta_cht_comb = 62.0 * math.pow(th_norm, 0.85)
-        # Convective cooling mass airflow rate: m_dot_cool ~ rho * v (scales with density ratio sigma)
-        # Thinner air at high altitude directly impairs convective heat extraction
-        mass_airflow_cooling = sigma * cooling_airspeed_effective
-        ram_air_cooling = 1.0 / (1.0 + 0.0075 * mass_airflow_cooling)
-        altitude_cooling_penalty = 1.0 + 0.12 * (1.0 - sigma)
-        cht_base = cht_baseline_c + (delta_cht_comb * altitude_cooling_penalty * ram_air_cooling)
+        cht_base = compute_nominal_cht_base(th_norm, sigma, cooling_airspeed_effective)
 
         for i in range(4):
             clog = clog_rates[i]
-            # Cylinder head temp has a localized effect from lean burn
             delta_cht_clog = 15.0 * clog if clog < 0.4 else -10.0 * clog
-            cht_target_i = cht_base + self.specs.cyl_cht_bias[i] + delta_cht_clog
+            delta_cht_cowl = 28.0 * cowl_blockage
+            cht_target_i = cht_base + self.specs.cyl_cht_bias[i] + delta_cht_clog + delta_cht_cowl
             
             # CHT has high thermal inertia (tau ~ 12s)
             d_cht = (cht_target_i - self.cht[i]) / self.specs.tau_cht_sec * dt
@@ -520,28 +433,17 @@ class AeroEnginePlant:
 
         # --- Step 6: Oil System Dynamics ---
         oil_leak = fault_phys_state.get("oil_leak_severity", 0.0)
-        
-        # Rotax 912 has an integrated oil thermostat bypassing the oil cooler below 78°C
-        # to ensure the oil stays warm (minimum 70-80°C) even during cold high-altitude descents.
-        oil_cooler_flow = cooling_airspeed_effective if self.oil_temp_c > 78.0 else 0.0
-        oil_temp_target = max(74.0, t_amb_c + 60.0 + 30.0 * (self.rpm / self.specs.max_rpm))
-        oil_temp_target /= (1.0 + 0.005 * oil_cooler_flow)
-        # Oil leak causes friction escalation and rapid oil overheating
-        oil_temp_target += (45.0 * oil_leak)
+        oil_temp_target = compute_target_oil_temp(
+            self.rpm, cooling_airspeed_effective, t_amb_c, self.oil_temp_c, self.specs
+        ) + (45.0 * oil_leak)
 
         d_oil_temp = (oil_temp_target - self.oil_temp_c) / self.specs.tau_oil_temp_sec * dt
         self.oil_temp_c = float(np.clip(self.oil_temp_c + d_oil_temp, 65.0, 145.0))
 
-        # Oil Pressure: mechanical gear pump driven by camshaft
-        p_oil_nominal = 1.8 + (self.specs.oil_press_max_bar - 1.8) * (
-            1.0 - math.exp(-max(0.0, self.rpm - 1000.0) / 1600.0)
-        )
-        # Viscosity thinning at elevated oil temperature
-        viscosity_loss = 0.016 * max(0.0, self.oil_temp_c - 80.0)
-        # Physical oil leak causes loss of hydraulic head
+        # Oil Pressure: mechanical gear pump with leak loss
+        p_oil_target_nominal = compute_target_oil_press(self.rpm, self.oil_temp_c, self.specs)
         leak_loss = 2.8 * oil_leak
-        
-        p_oil_target = max(0.4, p_oil_nominal - viscosity_loss - leak_loss)
+        p_oil_target = max(0.4, p_oil_target_nominal - leak_loss)
         d_p_oil = (p_oil_target - self.oil_press_bar) / self.specs.tau_oil_press_sec * dt
         self.oil_press_bar = float(np.clip(self.oil_press_bar + d_p_oil, 0.2, 5.5))
 
@@ -931,8 +833,8 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="UAV Engine Digital Twin Plant Simulator (Phase 1)")
     parser.add_argument("--demo", action="store_true", help="Run a quick single demonstration run and print stats")
-    parser.add_argument("--batch", type=int, default=0, help="Generate N synthetic runs for ML training")
-    parser.add_argument("--outdir", type=str, default="../data", help="Output directory for generated datasets")
+    parser.add_argument("--batch", type=int, default=0, help="Generate N synthetic runs for ML training (default: 0, no generation)")
+    parser.add_argument("--outdir", type=str, default="", help="Output directory for generated datasets (default: ../data)")
     args = parser.parse_args()
 
     print("\n" + "="*70)
@@ -984,12 +886,13 @@ if __name__ == "__main__":
     print(f"      ==> Boundary Checks: CHT Range [{cht_min:.1f}, {cht_max:.1f}]°C (Target: 150-230°C)")
     print(f"                           EGT Range [{egt_min:.1f}, {egt_max:.1f}]°C (Target: 650-950°C)")
 
-    # 3. Batch generator if requested or by default create sample data
-    batch_count = args.batch if args.batch > 0 else 10
-    print(f"\n[3/3] Generating Batch Synthetic Dataset ({batch_count} runs) for Phase 3 ML Layer...")
-    # Target data directory
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    target_data_dir = os.path.abspath(os.path.join(script_dir, "..", "data"))
-    res = generate_synthetic_dataset(num_runs=batch_count, output_dir=target_data_dir, seed=2026)
-    print(f"      -> Batch generation completed. Files saved to: {res['output_dir']}")
+    # 3. Batch generator ONLY if explicitly requested via --batch > 0
+    if args.batch > 0:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        target_data_dir = os.path.abspath(args.outdir) if args.outdir else os.path.abspath(os.path.join(script_dir, "..", "data"))
+        print(f"\n[3/3] Generating Batch Synthetic Dataset ({args.batch} runs) into '{target_data_dir}'...")
+        res = generate_synthetic_dataset(num_runs=args.batch, output_dir=target_data_dir, seed=2026)
+        print(f"      -> Batch generation completed. Files saved to: {res['output_dir']}")
+    else:
+        print("\n[3/3] Demonstration completed successfully. (No files modified. To generate batch runs, use --batch N).")
     print("="*70 + "\n")

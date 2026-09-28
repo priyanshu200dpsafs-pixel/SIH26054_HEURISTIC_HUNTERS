@@ -29,7 +29,16 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_ROOT = os.path.abspath(os.path.join(SCRIPT_DIR, ".."))
 sys.path.insert(0, os.path.join(PROJECT_ROOT, "plant_model"))
 
-from engine_plant import EngineSpecs, isa_atmosphere
+from physics_core import (
+    EngineSpecs,
+    isa_atmosphere,
+    compute_target_rpm,
+    compute_target_fuel_flow,
+    compute_nominal_egt_targets,
+    compute_nominal_cht_targets,
+    compute_target_oil_temp,
+    compute_target_oil_press,
+)
 
 
 class PhysicsExpectedEstimator:
@@ -80,54 +89,31 @@ class PhysicsExpectedEstimator:
         ias = max(0.0, airspeed_mps)
 
         # Step 2: Expected Shaft RPM Dynamics (Nominal Curve)
-        th_curve = 0.20 * th_norm + 0.80 * math.pow(th_norm, 0.85)
-        rpm_target = self.specs.idle_rpm + (
-            self.specs.max_rpm - self.specs.idle_rpm
-        ) * th_curve * math.pow(sigma, 0.70)
-        rpm_target = max(self.specs.idle_rpm * 0.90, min(self.specs.max_rpm, rpm_target))
-
+        rpm_target = compute_target_rpm(th_norm, sigma, self.specs)
         d_rpm = (rpm_target - self.rpm_exp) / self.specs.tau_rpm_sec * dt
         self.rpm_exp = float(np.clip(self.rpm_exp + d_rpm, 1200.0, 6000.0))
 
         # Step 3: Expected Fuel Flow Rate
-        ff_idle = 0.85
-        ff_max = 5.60
-        ff_target = ff_idle + (ff_max - ff_idle) * math.pow(th_norm, 1.1) * sigma
-        self.fuel_flow_exp = float(ff_target)
+        self.fuel_flow_exp = compute_target_fuel_flow(th_norm, sigma)
 
         # Step 4: Expected EGT (Nominal Rich-of-Peak Operation)
-        egt_base = 675.0 + 195.0 * math.pow(th_norm, 0.85) + 30.0 * (1.0 - sigma)
+        egt_targets = compute_nominal_egt_targets(th_norm, sigma, self.specs)
         for i in range(4):
-            egt_target_i = min(942.0, egt_base + self.specs.cyl_egt_bias[i])
-            d_egt = (egt_target_i - self.egt_exp[i]) / self.specs.tau_egt_sec * dt
+            d_egt = (egt_targets[i] - self.egt_exp[i]) / self.specs.tau_egt_sec * dt
             self.egt_exp[i] = float(np.clip(self.egt_exp[i] + d_egt, 550.0, 950.0))
 
         # Step 5: Expected CHT (Convective Heat Dissipation)
-        cht_baseline_c = 154.0
-        delta_cht_comb = 62.0 * math.pow(th_norm, 0.85)
-        mass_airflow_cooling = sigma * ias
-        ram_air_cooling = 1.0 / (1.0 + 0.0075 * mass_airflow_cooling)
-        altitude_cooling_penalty = 1.0 + 0.12 * (1.0 - sigma)
-        cht_base = cht_baseline_c + (delta_cht_comb * altitude_cooling_penalty * ram_air_cooling)
-
+        cht_targets = compute_nominal_cht_targets(th_norm, sigma, ias, self.specs)
         for i in range(4):
-            cht_target_i = cht_base + self.specs.cyl_cht_bias[i]
-            d_cht = (cht_target_i - self.cht_exp[i]) / self.specs.tau_cht_sec * dt
+            d_cht = (cht_targets[i] - self.cht_exp[i]) / self.specs.tau_cht_sec * dt
             self.cht_exp[i] = float(np.clip(self.cht_exp[i] + d_cht, 100.0, 260.0))
 
         # Step 6: Expected Oil System Dynamics
-        oil_cooler_flow = ias if self.oil_temp_exp > 78.0 else 0.0
-        oil_temp_target = max(74.0, t_amb_c + 60.0 + 30.0 * (self.rpm_exp / self.specs.max_rpm))
-        oil_temp_target /= (1.0 + 0.005 * oil_cooler_flow)
-
+        oil_temp_target = compute_target_oil_temp(self.rpm_exp, ias, t_amb_c, self.oil_temp_exp, self.specs)
         d_oil_temp = (oil_temp_target - self.oil_temp_exp) / self.specs.tau_oil_temp_sec * dt
         self.oil_temp_exp = float(np.clip(self.oil_temp_exp + d_oil_temp, 65.0, 145.0))
 
-        p_oil_nominal = 1.8 + (self.specs.oil_press_max_bar - 1.8) * (
-            1.0 - math.exp(-max(0.0, self.rpm_exp - 1000.0) / 1600.0)
-        )
-        viscosity_loss = 0.016 * max(0.0, self.oil_temp_exp - 80.0)
-        p_oil_target = max(0.4, p_oil_nominal - viscosity_loss)
+        p_oil_target = compute_target_oil_press(self.rpm_exp, self.oil_temp_exp, self.specs)
         d_p_oil = (p_oil_target - self.oil_press_exp) / self.specs.tau_oil_press_sec * dt
         self.oil_press_exp = float(np.clip(self.oil_press_exp + d_p_oil, 0.5, 5.5))
 
