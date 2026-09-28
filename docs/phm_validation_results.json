@@ -1,0 +1,436 @@
+{
+  "validation_timestamp": "2026-09-28 23:34:36 UTC",
+  "dataset_split": {
+    "total_runs": 150,
+    "seed": 42,
+    "train_runs_count": 105,
+    "val_runs_count": 22,
+    "test_runs_count": 23,
+    "train_run_ids": [
+      1,
+      2,
+      5,
+      7,
+      8,
+      10,
+      11,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      23,
+      26,
+      27,
+      28,
+      30,
+      32,
+      33,
+      35,
+      36,
+      37,
+      38,
+      40,
+      41,
+      42,
+      43,
+      44,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      53,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      62,
+      63,
+      64,
+      65,
+      67,
+      69,
+      71,
+      73,
+      76,
+      77,
+      78,
+      81,
+      82,
+      83,
+      84,
+      85,
+      86,
+      87,
+      88,
+      89,
+      91,
+      92,
+      93,
+      97,
+      98,
+      104,
+      105,
+      106,
+      107,
+      109,
+      110,
+      111,
+      112,
+      113,
+      114,
+      117,
+      118,
+      119,
+      121,
+      122,
+      123,
+      124,
+      126,
+      127,
+      129,
+      130,
+      132,
+      133,
+      134,
+      136,
+      137,
+      138,
+      140,
+      143,
+      144,
+      145,
+      146,
+      147,
+      149,
+      150
+    ],
+    "val_run_ids": [
+      3,
+      22,
+      24,
+      25,
+      31,
+      54,
+      61,
+      70,
+      75,
+      79,
+      80,
+      94,
+      95,
+      96,
+      101,
+      102,
+      116,
+      120,
+      128,
+      135,
+      141,
+      142
+    ],
+    "test_run_ids": [
+      4,
+      6,
+      9,
+      12,
+      29,
+      34,
+      39,
+      45,
+      52,
+      66,
+      68,
+      72,
+      74,
+      90,
+      99,
+      100,
+      103,
+      108,
+      115,
+      125,
+      131,
+      139,
+      148
+    ],
+    "category_summary": {
+      "cooling_duct_blockage": {
+        "total": 13,
+        "train": 9,
+        "val": 2,
+        "test": 2
+      },
+      "injector_clog": {
+        "total": 54,
+        "train": 38,
+        "val": 8,
+        "test": 8
+      },
+      "nominal": {
+        "total": 43,
+        "train": 30,
+        "val": 6,
+        "test": 7
+      },
+      "oil_leak": {
+        "total": 17,
+        "train": 12,
+        "val": 3,
+        "test": 2
+      },
+      "sensor_drift": {
+        "total": 23,
+        "train": 16,
+        "val": 3,
+        "test": 4
+      }
+    }
+  },
+  "rul_benchmarking_test_set": {
+    "num_test_sorties": 23,
+    "num_test_samples": 10680,
+    "baseline_a_constant_healthy": {
+      "mae": 54.51,
+      "rmse": 97.01,
+      "medae": 0.08,
+      "r2": -0.461
+    },
+    "baseline_b_deterministic_physics": {
+      "mae": 29.02,
+      "rmse": 64.55,
+      "medae": 0.1,
+      "r2": 0.353
+    },
+    "baseline_c_random_forest_stateless": {
+      "mae": 1.09,
+      "rmse": 4.86,
+      "medae": 0.01,
+      "r2": 0.996
+    },
+    "uncertainty_interval": {
+      "coverage_percent": 61.96,
+      "calibrated_target_percent": 80.0,
+      "average_interval_width_hours": 3.1
+    },
+    "per_fault_breakdown": {
+      "cooling_duct_blockage": {
+        "samples": 1020,
+        "mae": 4.02,
+        "rmse": 11.23,
+        "medae": 0.5,
+        "coverage_pct": 48.3,
+        "avg_interval_hours": 6.9
+      },
+      "injector_clog": {
+        "samples": 3780,
+        "mae": 1.43,
+        "rmse": 3.16,
+        "medae": 0.22,
+        "coverage_pct": 72.3,
+        "avg_interval_hours": 4.0
+      },
+      "nominal": {
+        "samples": 3360,
+        "mae": 0.13,
+        "rmse": 0.29,
+        "medae": 0.01,
+        "coverage_pct": 52.0,
+        "avg_interval_hours": 0.6
+      },
+      "oil_leak": {
+        "samples": 960,
+        "mae": 0.26,
+        "rmse": 1.25,
+        "medae": 0.0,
+        "coverage_pct": 78.9,
+        "avg_interval_hours": 2.9
+      },
+      "sensor_drift": {
+        "samples": 1560,
+        "mae": 0.96,
+        "rmse": 7.35,
+        "medae": 0.01,
+        "coverage_pct": 56.8,
+        "avg_interval_hours": 4.1
+      }
+    },
+    "per_severity_breakdown": {
+      "Low Severity (< 0.35)": {
+        "samples": 1560,
+        "mae": 1.23,
+        "rmse": 2.99
+      },
+      "Med Severity (0.35 - 0.50)": {
+        "samples": 1920,
+        "mae": 2.4,
+        "rmse": 6.54
+      },
+      "High Severity (> 0.50)": {
+        "samples": 2280,
+        "mae": 1.41,
+        "rmse": 5.61
+      }
+    }
+  },
+  "residual_anomaly_detector": {
+    "nominal_flights_count": 7,
+    "nominal_flight_hours": 0.93,
+    "false_alarms_count": 0,
+    "false_alarm_rate_per_hour": 0.0,
+    "faulty_flights_count": 16,
+    "faults_detected_count": 14,
+    "detection_rate_percent": 87.5,
+    "detection_delay_seconds": {
+      "mean": 17.54,
+      "median": 8.75,
+      "min": 5.8,
+      "max": 48.3
+    }
+  },
+  "early_warning_lead_time": {
+    "redline_crossing_cases_count": 5,
+    "lead_time_seconds": {
+      "mean": 54.5,
+      "median": 7.9,
+      "min": 7.4,
+      "max": 127.1,
+      "std": 57.46
+    }
+  },
+  "fault_discriminator": {
+    "overall_accuracy_percent": 91.3,
+    "macro_f1": 0.775,
+    "per_class_metrics": {
+      "nominal": {
+        "precision": 0.778,
+        "recall": 1.0,
+        "f1": 0.875,
+        "support": 7
+      },
+      "injector_clog": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 8
+      },
+      "sensor_drift": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 4
+      },
+      "oil_leak": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 2
+      },
+      "cooling_duct_blockage": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 2
+      }
+    },
+    "confusion_matrix": {
+      "classes": [
+        "nominal",
+        "injector_clog",
+        "sensor_drift",
+        "oil_leak",
+        "cooling_duct_blockage"
+      ],
+      "matrix": [
+        [
+          7,
+          0,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          8,
+          0,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          4,
+          0,
+          0
+        ],
+        [
+          0,
+          0,
+          0,
+          2,
+          0
+        ],
+        [
+          2,
+          0,
+          0,
+          0,
+          0
+        ]
+      ]
+    }
+  },
+  "explainable_diagnostic_samples": [
+    {
+      "run_id": 9,
+      "true_scenario": "cooling_duct_blockage",
+      "diagnosed_fault": "NONE",
+      "classification": "NOMINAL",
+      "explanation": "Nominal operation."
+    },
+    {
+      "run_id": 72,
+      "true_scenario": "cooling_duct_blockage",
+      "diagnosed_fault": "NONE",
+      "classification": "NOMINAL",
+      "explanation": "Nominal operation."
+    },
+    {
+      "run_id": 148,
+      "true_scenario": "injector_clog",
+      "diagnosed_fault": "INJECTOR_CLOG",
+      "classification": "PLANT_FAULT",
+      "explanation": "Cylinder 1 EGT rose by +60.2\u00b0C with a simultaneous correlated engine shaft droop of -106.2 RPM. Physical power loss confirms genuine combustion lean degradation (injector fuel restriction)."
+    },
+    {
+      "run_id": 108,
+      "true_scenario": "injector_clog",
+      "diagnosed_fault": "INJECTOR_CLOG",
+      "classification": "PLANT_FAULT",
+      "explanation": "Cylinder 3 EGT rose by +107.3\u00b0C with a simultaneous correlated engine shaft droop of -189.9 RPM. Physical power loss confirms genuine combustion lean degradation (injector fuel restriction)."
+    }
+  ],
+  "feature_importances": {
+    "oil_press_residual": 0.7525967792211349,
+    "max_cht_residual": 0.19839900957241247,
+    "cumulative_stress": 0.0209461710728242,
+    "throttle_pct": 0.006973942306471964,
+    "oil_temp_residual": 0.0047719297971741,
+    "rpm_residual": 0.004100701448026431,
+    "fuel_flow_residual": 0.003020271914482654,
+    "anomaly_duration_sec": 0.00275857993834968,
+    "max_egt_residual": 0.0024943987630607076,
+    "rpm_droop_signed": 0.0019376777478272008,
+    "altitude_m": 0.0017254274577659513,
+    "egt_residual_derivative": 0.00019719661423169013,
+    "coupling_ratio": 7.791414623819197e-05
+  }
+}

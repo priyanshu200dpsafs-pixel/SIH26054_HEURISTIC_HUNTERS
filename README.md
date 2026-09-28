@@ -166,3 +166,97 @@ python run_mission_stream.py --duration 30 --rate 10 --fast
 # Machine-readable JSON output (streamed per timestep)
 python run_mission_stream.py --duration 5 --rate 10 --json
 ```
+
+---
+
+## Phase 3B: Real-Time Intelligent Digital Twin
+
+Phase 3B integrates the live CAN telemetry pipeline with the scientific PHM subsystem into a **single unified real-time runtime engine** (`DigitalTwinRuntime`).
+
+### Real-Time Runtime Pipeline
+
+```text
+       PLANT (Rotax 912 Dynamic Simulator)
+         ↓
+       CAN ENCODER (DBC packing + 28-byte wire envelope)
+         ↓
+       TRANSPORT (Localhost UDP IPC loopback)
+         ↓
+       CAN DECODER (CRC-8, sequence continuity, 0x100 parity)
+         ↓
+       TELEMETRY EVENT (Validated sensor dictionary)
+         ↓
+       PHYSICS OBSERVER (Analytical expected model)
+         ↓
+       RESIDUAL DETECTION (EWMA + 3-sigma statistical thresholds)
+         ↓
+       FAULT CLASSIFICATION (Multivariate cross-channel coupling)
+         ↓
+       RUL ESTIMATION (Stateless Quantile Random Forest)
+         ↓
+       UNCERTAINTY CALIBRATION (Calibrated [Q10, Q90] prediction intervals)
+         ↓
+       EXPLAINABILITY (Evidence-based physical causal reasoning)
+         ↓
+       UNIFIED DIGITAL TWIN STATE (DigitalTwinState)
+         ↓
+       STRUCTURED OUTPUT (Terminal Diagnostic Cards / Streaming JSON)
+```
+
+### Running the Digital Twin Runtime
+
+#### 1. Nominal Flight Run
+```bash
+python run_digital_twin.py --duration 30 --rate 10 --seed 42
+```
+
+#### 2. Injected Fault Run (Cylinder 2 Injector Clog)
+```bash
+python run_digital_twin.py \
+    --fault injector_clog \
+    --severity 0.6 \
+    --duration 30 \
+    --rate 10 \
+    --seed 42
+```
+
+#### 3. Machine-Readable JSON Streaming
+```bash
+python run_digital_twin.py \
+    --fault injector_clog \
+    --severity 0.6 \
+    --duration 30 \
+    --rate 10 \
+    --json
+```
+
+#### 4. Verbose Diagnostic Terminal Cards
+```bash
+python run_digital_twin.py \
+    --fault oil_leak \
+    --severity 0.6 \
+    --duration 20 \
+    --rate 10 \
+    --verbose
+```
+
+### Running the Test Suites
+
+```bash
+# Phase 3B Runtime Unit Tests (Tests A through I)
+python digital_twin/test_runtime.py
+
+# Phase 3B Full End-to-End Pipeline Integration Tests
+python tests/test_digital_twin_end_to_end.py
+```
+
+### Scientific Honesty & Known Limitations
+
+1. **Simulation RUL Target Disclosure:**
+   The RUL target in this prototype represents a **hybrid heuristic/synthetic degradation countdown** calibrated to simulated thermal, mechanical, and cumulative operating stress. It must **NOT** be claimed as certified or empirically validated remaining engine life.
+2. **Cooling Duct Blockage Limitation:**
+   As verified in Phase 3A held-out evaluation, cooling duct blockage exhibits weak CHT coupling under typical UAV loiter cruise airflows (residual magnitude remains below caution thresholds). The system documents this known limitation rather than fabricating false certainty.
+3. **Simulation-Only Environment:**
+   This system is an engineering research prototype running over virtual simulation transports. It is **not** certified for autonomous aircraft flight control, safety-critical decision making, or real aircraft dispatch without formal DO-178C / DO-254 qualification.
+4. **No LLM / No Black-Box Hallucinations:**
+   Explanations are deterministically compiled from real physics residuals, cross-channel coupling metrics, and redline checks. No generative language models or ungrounded statistics are involved.

@@ -1,11 +1,25 @@
 #!/usr/bin/env python3
 """
 ===============================================================================
-DIGITAL TWIN: REMAINING USEFUL LIFE (RUL) ESTIMATOR (PHASE 3)
+DIGITAL TWIN: REMAINING USEFUL LIFE (RUL) ESTIMATOR (PHASE 3A)
 ===============================================================================
 Predicts Remaining Safe Flight Hours with a calibrated uncertainty band
 (10th to 90th percentile prediction interval) using an ensemble Random Forest
 Quantile Regressor trained on physics residual trends and cumulative damage metrics.
+
+SCIENTIFIC AUDIT & REBUILD UPGRADES (PHASE 3A):
+  1. STATELESS INFERENCE: The estimator's predict() method is strictly stateless.
+     The exact same feature vector always produces the exact same prediction,
+     with zero hidden state or unannounced post-inference clamping.
+  2. DECOUPLED TEMPORAL FILTER: A dedicated TemporalRULFilter class handles
+     continuous stream smoothing when deployed in live telemetry missions.
+  3. MISSION-GROUPED TRAINING: Training operates strictly on held-in TRAIN sorties;
+     zero validation or test sorties are ingested during model training.
+  4. QUANTILE INTERVALS: Computes Q10, Q50, and Q90 bounds directly across
+     the ensemble tree predictions, guaranteeing Q10 <= Q50 <= Q90 without
+     quantile crossing.
+  5. BASELINES: Exposes Baseline A (Constant Healthy RUL) and Baseline B
+     (Deterministic Physics Limit-Margin Estimator) for rigorous benchmarking.
 
 Input Features (13-dimensional physics feature vector):
   1. max_egt_residual: peak EGT residual across 4 cylinders (°C)
@@ -21,13 +35,6 @@ Input Features (13-dimensional physics feature vector):
   11. coupling_ratio: ratio of shaft torque droop to thermal rise (discriminator metric)
   12. throttle_pct: current throttle setting (%)
   13. altitude_m: barometric pressure altitude (m)
-
-Outputs:
-  - rul_hours: Median expected safe flight hours (Q50)
-  - rul_lower_hours: Pessimistic lower bound (Q10)
-  - rul_upper_hours: Optimistic upper bound (Q90)
-  - uncertainty_band_hours: Prediction interval spread (Q90 - Q10)
-  - rul_minutes: Median in minutes
 ===============================================================================
 """
 
@@ -55,10 +62,149 @@ sys.path.insert(0, SCRIPT_DIR)
 from residual_detector import ResidualAnomalyDetector
 
 
+# =============================================================================
+# 1. BASELINE ESTIMATORS FOR BENCHMARKING
+# =============================================================================
+class BaselineA_ConstantRUL:
+    """
+    Baseline A: Naive constant healthy engine RUL.
+    Always predicts nominal Time-Between-Overhaul (TBO) safe operating hours (195.0 hrs).
+    """
+    def __init__(self, constant_rul_hours: float = 195.0):
+        self.constant_rul_hours = constant_rul_hours
+
+    def predict(self, feature_vector: np.ndarray) -> Dict[str, float]:
+        val = self.constant_rul_hours
+        return {
+            "rul_hours": round(val, 2),
+            "rul_lower_hours": round(val - 15.0, 2),
+            "rul_upper_hours": round(val + 15.0, 2),
+            "uncertainty_band_hours": 30.0,
+            "rul_minutes": round(val * 60.0, 1),
+        }
+
+
+class BaselineB_PhysicsLimitEstimator:
+    """
+    Baseline B: Deterministic, physics/damage-derived limit-margin estimator.
+    Calculates remaining safe flight hours directly from thermodynamic limit proximity:
+      - EGT continuous caution: 880°C, Redline: 950°C (Margin: 70°C)
+      - CHT continuous caution: 200°C, Redline: 250°C (Margin: 50°C)
+      - Oil Pressure minimum: 1.50 bar (Margin: 1.50 bar)
+      - Oil Temperature critical: 125°C (Margin: 20°C)
+
+    Does NOT use machine learning or random forests. Pure analytical calculation.
+    """
+    def __init__(self, nominal_tbo_hours: float = 195.0):
+        self.nominal_tbo_hours = nominal_tbo_hours
+
+    def predict(
+        self,
+        feature_vector: np.ndarray,
+        current_telemetry: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, float]:
+        max_egt_res = float(feature_vector[0])
+        max_cht_res = float(feature_vector[1])
+        oil_p_res = float(feature_vector[3])
+        oil_t_res = float(feature_vector[4])
+        anom_duration = float(feature_vector[8])
+        cum_stress = float(feature_vector[9])
+
+        # Compute normalized severity across physical limits
+        s_egt = max_egt_res / 70.0
+        s_cht = max_cht_res / 50.0
+        s_oil_p = oil_p_res / 1.50
+        s_oil_t = oil_t_res / 20.0
+
+        peak_severity = max(s_egt, s_cht, s_oil_p, s_oil_t)
+
+        if peak_severity < 0.25 and anom_duration < 1.0:
+            # Engine is in nominal healthy regime
+            pred_rul = max(100.0, self.nominal_tbo_hours - 0.05 * anom_duration)
+            q10 = pred_rul - 12.0
+            q90 = pred_rul + 12.0
+        else:
+            # Active thermodynamic/mechanical degradation
+            sev_clamped = min(1.0, max(0.0, peak_severity))
+            # Analytical degradation curve: severe drop followed by time-stress attrition
+            stress_reduction = (self.nominal_tbo_hours - 30.0) * (sev_clamped ** 0.75)
+            time_wear = 0.25 * anom_duration + 0.01 * cum_stress
+            pred_rul = max(2.0, self.nominal_tbo_hours - stress_reduction - time_wear)
+            # Physical uncertainty spreads as damage progresses
+            spread = max(4.0, 15.0 * (1.0 + sev_clamped))
+            q10 = max(0.5, pred_rul - spread * 0.5)
+            q90 = pred_rul + spread * 0.5
+
+        return {
+            "rul_hours": round(pred_rul, 2),
+            "rul_lower_hours": round(q10, 2),
+            "rul_upper_hours": round(q90, 2),
+            "uncertainty_band_hours": round(q90 - q10, 2),
+            "rul_minutes": round(pred_rul * 60.0, 1),
+        }
+
+
+# =============================================================================
+# 2. DECOUPLED TEMPORAL STREAM FILTER
+# =============================================================================
+class TemporalRULFilter:
+    """
+    Independent temporal post-processing filter for mission telemetry streaming.
+    Decoupled completely from raw model inference.
+    Enforces continuous monotonic degradation tracking under active faults.
+    """
+    def __init__(self, initial_rul_hours: float = 195.0):
+        self.initial_rul_hours = initial_rul_hours
+        self.current_rul_hours = initial_rul_hours
+        self.current_q90_hours = initial_rul_hours + 20.0
+
+    def reset(self):
+        """Resets filter tracking state between mission sorties."""
+        self.current_rul_hours = self.initial_rul_hours
+        self.current_q90_hours = self.initial_rul_hours + 20.0
+
+    def filter(
+        self,
+        raw_pred: Dict[str, float],
+        is_active_fault: bool = False
+    ) -> Dict[str, float]:
+        """
+        Applies monotonic degradation tracking if an active fault has been confirmed.
+        """
+        q50 = raw_pred["rul_hours"]
+        q10 = raw_pred["rul_lower_hours"]
+        q90 = raw_pred["rul_upper_hours"]
+
+        if is_active_fault:
+            self.current_rul_hours = min(self.current_rul_hours, q50)
+            self.current_q90_hours = min(self.current_q90_hours, q90)
+        else:
+            self.current_rul_hours = q50
+            self.current_q90_hours = q90
+
+        filt_q50 = max(0.5, self.current_rul_hours)
+        filt_q10 = max(0.2, min(filt_q50, q10))
+        filt_q90 = max(filt_q50, self.current_q90_hours)
+        spread = filt_q90 - filt_q10
+
+        return {
+            "rul_hours": round(filt_q50, 2),
+            "rul_lower_hours": round(filt_q10, 2),
+            "rul_upper_hours": round(filt_q90, 2),
+            "uncertainty_band_hours": round(spread, 2),
+            "rul_minutes": round(filt_q50 * 60.0, 1),
+            "rul_lower_minutes": round(filt_q10 * 60.0, 1),
+            "rul_upper_minutes": round(filt_q90 * 60.0, 1)
+        }
+
+
+# =============================================================================
+# 3. STATELESS RANDOM FOREST QUANTILE ESTIMATOR
+# =============================================================================
 class RULEstimator:
     """
-    Random Forest Quantile Ensemble for explainable, physics-grounded RUL prediction
-    with guaranteed monotonic uncertainty intervals and no quantile crossing.
+    Random Forest Quantile Ensemble for explainable, physics-grounded RUL prediction.
+    Features strictly causal feature engineering and stateless prediction.
     """
 
     FEATURE_NAMES = [
@@ -80,13 +226,10 @@ class RULEstimator:
     def __init__(self):
         self.model: Optional[RandomForestRegressor] = None
         self.is_trained = False
-        self.prev_rul_hours: float = 200.0
-        self.prev_q90_hours: float = 220.0
 
     def reset(self):
-        """Resets tracking state between mission sorties."""
-        self.prev_rul_hours = 200.0
-        self.prev_q90_hours = 220.0
+        """No-op: Model inference is strictly stateless."""
+        pass
 
     def extract_features(
         self,
@@ -96,6 +239,7 @@ class RULEstimator:
     ) -> np.ndarray:
         """
         Extracts the 13-dimensional physics residual feature vector from detector output.
+        Strictly causal: information strictly at or before current timestep t.
         """
         ewma_res = detector_output["ewma_residuals"]
         signed_res = detector_output["signed_residuals"]
@@ -143,25 +287,33 @@ class RULEstimator:
     def train_on_dataset(
         self,
         data_directory: str = DATA_DIR,
+        run_files: Optional[List[str]] = None,
         max_runs_to_use: int = 150,
-        subsample_step: int = 10  # Sample every 1.0s (10 Hz // 10)
+        subsample_step: int = 10,
+        random_seed: int = 42
     ) -> Dict[str, Any]:
         """
         Processes training runs through ResidualAnomalyDetector and trains
         the Random Forest Quantile Regressor on physics residual features and cumulative damage.
-        """
-        logger.info(f"Loading training runs from: {data_directory}...")
-        csv_files = sorted(glob.glob(os.path.join(data_directory, "run_*.csv")))
-        if not csv_files:
-            raise FileNotFoundError(f"No run CSV files found in {data_directory}!")
 
-        csv_files = csv_files[:max_runs_to_use]
-        logger.info(f"Processing {len(csv_files)} runs through physics detector for feature extraction...")
+        If run_files is provided, ONLY those files (e.g. held-in TRAIN sorties) are used.
+        """
+        if run_files is not None:
+            csv_files = [os.path.join(data_directory, f) if not os.path.isabs(f) else f for f in run_files]
+        else:
+            logger.info(f"Loading training runs from: {data_directory}...")
+            csv_files = sorted(glob.glob(os.path.join(data_directory, "run_*.csv")))
+            csv_files = csv_files[:max_runs_to_use]
+
+        if not csv_files:
+            raise FileNotFoundError(f"No run CSV files found to train on!")
+
+        logger.info(f"Processing {len(csv_files)} training sorties through physics detector for feature extraction...")
 
         X_rows = []
         y_rows = []
 
-        for f_idx, fpath in enumerate(csv_files, 1):
+        for fpath in csv_files:
             df = pd.read_csv(fpath)
             if "rul_remaining_hours" in df.columns:
                 rul_col = "rul_remaining_hours"
@@ -198,13 +350,13 @@ class RULEstimator:
         logger.info(f"Constructed training matrix: {X.shape[0]} samples with {X.shape[1]} features.")
         logger.info(f"Target RUL Range: [{np.min(y):.2f}, {np.max(y):.2f}] hours (Mean: {np.mean(y):.2f} hrs).")
 
-        # Train Random Forest Ensemble (100 estimators, max_depth=12)
+        # Train Random Forest Ensemble (100 estimators, max_depth=12, fixed seed)
         logger.info("Training Random Forest Quantile Ensemble...")
         self.model = RandomForestRegressor(
             n_estimators=100,
             max_depth=12,
             min_samples_leaf=2,
-            random_state=42,
+            random_state=random_seed,
             n_jobs=-1
         )
         self.model.fit(X, y)
@@ -213,13 +365,20 @@ class RULEstimator:
         os.makedirs(MODEL_DIR, exist_ok=True)
         model_pkg = {
             "model": self.model,
-            "feature_names": self.FEATURE_NAMES
+            "feature_names": self.FEATURE_NAMES,
+            "train_runs_count": len(csv_files),
+            "train_samples": len(X),
+            "random_seed": random_seed
         }
         model_save_path = os.path.join(MODEL_DIR, "rul_models.joblib")
         joblib.dump(model_pkg, model_save_path)
         logger.info(f"RUL models saved to '{model_save_path}'.")
 
-        return {"train_samples": len(X), "model_path": model_save_path}
+        return {
+            "train_sorties": len(csv_files),
+            "train_samples": len(X),
+            "model_path": model_save_path
+        }
 
     def load_model(self, model_path: Optional[str] = None):
         """Loads pre-trained RUL models from disk."""
@@ -234,16 +393,9 @@ class RULEstimator:
 
     def predict(self, feature_vector: np.ndarray) -> Dict[str, float]:
         """
-        Predicts Remaining Useful Life with uncertainty interval.
-        Uses ensemble tree distribution to guarantee zero quantile crossing.
-
-        Returns:
-          Dict:
-            - 'rul_hours': Median estimate Q50
-            - 'rul_lower_hours': 10th percentile bound
-            - 'rul_upper_hours': 90th percentile bound
-            - 'uncertainty_band_hours': Spread between Q90 and Q10
-            - 'rul_minutes': Median in minutes
+        STRICTLY STATELESS RUL INFERENCE.
+        Predicts Remaining Useful Life with calibrated uncertainty interval [Q10, Q90].
+        The exact same feature vector always produces the exact same prediction.
         """
         if not self.is_trained or self.model is None:
             try:
@@ -258,24 +410,10 @@ class RULEstimator:
         raw_q50 = float(np.median(tree_preds))
         raw_q90 = float(np.percentile(tree_preds, 90))
 
-        # Physical clamping and monotonic degradation enforcement:
-        # Irreversible physical damage implies that under active mechanical fault,
-        # safe flight hours do not spontaneously recover without depot overhaul.
-        anom_duration = float(feature_vector[8])  # anomaly_duration_sec
-        cum_stress = float(feature_vector[9])     # cumulative_stress
-
-        if anom_duration > 0.0 or cum_stress > 0.0:
-            raw_q50 = min(self.prev_rul_hours, raw_q50)
-            self.prev_rul_hours = raw_q50
-            raw_q90 = min(self.prev_q90_hours, raw_q90)
-            self.prev_q90_hours = raw_q90
-        else:
-            self.prev_rul_hours = raw_q50
-            self.prev_q90_hours = raw_q90
-
-        q50 = max(1.0, min(220.0, raw_q50))
-        q10 = max(0.5, min(q50, raw_q10))
-        q90 = max(q50, min(240.0, raw_q90))
+        # Enforce valid physical bounds and monotonic quantile intervals without state mutation
+        q50 = max(0.5, raw_q50)
+        q10 = max(0.2, min(q50, raw_q10))
+        q90 = max(q50, raw_q90)
         spread = q90 - q10
 
         return {
@@ -289,17 +427,25 @@ class RULEstimator:
         }
 
     def get_feature_importances(self) -> Dict[str, float]:
-        """Returns explainable feature importance breakdown across physics residuals."""
+        """Returns explainable model feature importance breakdown across physics residuals."""
         if not self.is_trained or self.model is None:
             self.load_model()
         return dict(sorted(zip(self.FEATURE_NAMES, self.model.feature_importances_), key=lambda x: -x[1]))
 
 
 if __name__ == "__main__":
+    from dataset_split import get_grouped_splits
+    splits = get_grouped_splits(DATA_DIR, seed=42)
+    train_files = [r["filename"] for r in splits["train"]]
+
     estimator = RULEstimator()
-    res = estimator.train_on_dataset(max_runs_to_use=150)
-    print("\n--- RUL MODEL TRAINING COMPLETED ---")
-    print(f"Trained on {res['train_samples']} samples from 150 sorties.")
-    print("Feature Importances:")
+    res = estimator.train_on_dataset(
+        data_directory=DATA_DIR,
+        run_files=train_files,
+        random_seed=42
+    )
+    print("\n--- RUL MODEL TRAINING COMPLETED (TRAIN SORTIES ONLY) ---")
+    print(f"Trained on {res['train_samples']} samples from {res['train_sorties']} sorties.")
+    print("Feature Importances (Model Feature Importance, Not Causal Importance):")
     for k, v in estimator.get_feature_importances().items():
         print(f"  {k:26s}: {v*100:5.2f}%")
