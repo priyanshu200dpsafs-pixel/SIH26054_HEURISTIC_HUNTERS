@@ -30,6 +30,13 @@ import signal
 import argparse
 from typing import Dict, Any, List, Optional, Tuple
 
+# Ensure utf-8 output encoding on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 # Ensure project root is in sys.path
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 if PROJECT_ROOT not in sys.path:
@@ -59,7 +66,7 @@ class DigitalTwinStreamOrchestrator:
         self,
         fault_type: str = "nominal",
         fault_severity: float = 0.5,
-        fault_start_t: float = 10.0,
+        fault_start_t: Optional[float] = None,
         fault_cylinder: int = 2,
         duration_sec: float = 30.0,
         rate_hz: float = 10.0,
@@ -67,6 +74,7 @@ class DigitalTwinStreamOrchestrator:
         port: int = 5555,
         fast_mode: bool = False,
         verbose: bool = False,
+        compact: bool = False,
         json_output: bool = False
     ):
         self.duration_sec = duration_sec
@@ -75,8 +83,13 @@ class DigitalTwinStreamOrchestrator:
         self.random_seed = random_seed
         self.fast_mode = fast_mode
         self.verbose = verbose
+        self.compact = compact
         self.json_output = json_output
         self.interrupted = False
+
+        if fault_start_t is None:
+            fault_start_t = min(2.0, self.duration_sec * 0.2)
+        self.fault_start_t = fault_start_t
 
         # Initialize Plant & Faults
         self.specs = EngineSpecs()
@@ -114,11 +127,13 @@ class DigitalTwinStreamOrchestrator:
         elif ft in ("oil_leak", "leak"):
             ft = "oil_leak"
 
+        ramp_sec = min(1.5, self.duration_sec * 0.15)
+
         if ft == "injector_clog":
             fault_events.append(FaultEvent(
                 fault_type="injector_clog",
                 start_time_sec=start_t,
-                duration_ramp_sec=8.0,
+                duration_ramp_sec=ramp_sec,
                 target_cylinder=cylinder,
                 severity=severity
             ))
@@ -126,23 +141,23 @@ class DigitalTwinStreamOrchestrator:
             fault_events.append(FaultEvent(
                 fault_type="oil_leak",
                 start_time_sec=start_t,
-                duration_ramp_sec=10.0,
+                duration_ramp_sec=ramp_sec,
                 severity=severity
             ))
         elif ft == "cooling_duct_blockage":
             fault_events.append(FaultEvent(
                 fault_type="cooling_duct_blockage",
                 start_time_sec=start_t,
-                duration_ramp_sec=12.0,
+                duration_ramp_sec=ramp_sec,
                 severity=severity
             ))
         elif ft == "sensor_drift":
             fault_events.append(FaultEvent(
                 fault_type="sensor_drift",
                 start_time_sec=start_t,
-                duration_ramp_sec=5.0,
+                duration_ramp_sec=ramp_sec,
                 sensor_name="egt2",
-                drift_rate=0.8,
+                drift_rate=15.0,
                 severity=severity
             ))
         return FaultManager(faults=fault_events)
@@ -202,7 +217,7 @@ class DigitalTwinStreamOrchestrator:
         profile = self._generate_flight_profile()
         total_steps = len(profile)
 
-        if not self.json_output:
+        if not self.json_output and self.compact:
             print("\n" + "=" * 75)
             print("DIGITAL TWIN REAL-TIME TELEMETRY RUNTIME INTEGRATION (PHASE 3B)")
             print("=" * 75)
@@ -277,11 +292,10 @@ class DigitalTwinStreamOrchestrator:
                 # 6. Stream Output
                 if self.json_output:
                     print(dt_state.to_json(), flush=True)
-                elif self.verbose:
-                    print(dt_state.format_terminal_card(), flush=True)
-                    print("-" * 75, flush=True)
-                else:
+                elif self.compact:
                     print(dt_state.format_console_line(), flush=True)
+                else:
+                    print(dt_state.format_terminal_card(), flush=True)
 
                 # 7. Real-time rate throttling (unless --fast is passed)
                 if not self.fast_mode:
@@ -309,8 +323,8 @@ def main():
                         help="Fault type to inject during mission")
     parser.add_argument("--severity", type=float, default=0.5,
                         help="Fault severity fraction (0.0 to 1.0)")
-    parser.add_argument("--fault-start", type=float, default=10.0,
-                        help="Time in seconds when fault initiates")
+    parser.add_argument("--fault-start", type=float, default=None,
+                        help="Time in seconds when fault initiates (default: 20% into mission)")
     parser.add_argument("--cylinder", type=int, default=2, choices=[1, 2, 3, 4],
                         help="Target cylinder for cylinder-specific faults")
     parser.add_argument("--duration", type=float, default=30.0,
@@ -325,6 +339,8 @@ def main():
                         help="Run at full CPU speed without real-time sleep")
     parser.add_argument("--verbose", action="store_true",
                         help="Print comprehensive multi-line terminal cards with evidence")
+    parser.add_argument("--compact", action="store_true",
+                        help="Print compact single-line stream instead of multi-line terminal cards")
     parser.add_argument("--json", action="store_true",
                         help="Emit machine-readable JSON lines for streaming consumers")
 
@@ -341,6 +357,7 @@ def main():
         port=args.port,
         fast_mode=args.fast,
         verbose=args.verbose,
+        compact=args.compact,
         json_output=args.json
     )
 

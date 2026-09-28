@@ -50,6 +50,8 @@ from digital_twin.state import (
     MLPredictionState,
     DigitalTwinState,
 )
+from digital_twin.health_state import HealthStateEngine
+from digital_twin.explanation import generate_explanation, EvidenceItem
 from ml_layer.physics_estimator import PhysicsExpectedEstimator
 from ml_layer.residual_detector import ResidualAnomalyDetector
 from ml_layer.fault_discriminator import FaultDiscriminator
@@ -78,6 +80,7 @@ class DigitalTwinRuntime:
         self.discriminator = FaultDiscriminator()
         self.rul_estimator = RULEstimator()
         self.temporal_filter = TemporalRULFilter() if enable_temporal_filter else None
+        self.health_engine = HealthStateEngine()
 
         # Pre-load ML models
         try:
@@ -95,6 +98,7 @@ class DigitalTwinRuntime:
         self.total_frames_processed: int = 0
         self.total_invalid_frames: int = 0
         self.total_sequence_gaps: int = 0
+        self.total_redline_events: int = 0
         self.latencies_ms: List[float] = []
 
         # Mission Diagnostic Timeline
@@ -121,6 +125,7 @@ class DigitalTwinRuntime:
         self.total_frames_processed = 0
         self.total_invalid_frames = 0
         self.total_sequence_gaps = 0
+        self.total_redline_events = 0
         self.latencies_ms.clear()
         for k in self.state_counts:
             self.state_counts[k] = 0
@@ -176,58 +181,8 @@ class DigitalTwinRuntime:
         return TelemetryQuality.VALID, []
 
     def check_redlines(self, telemetry: Dict[str, Any]) -> Tuple[RedlineStatus, Dict[str, Any]]:
-        """
-        Checks telemetry parameters against engine limits (physics_core single source of truth).
-        """
-        breached = {}
-        max_egt = max(float(telemetry.get(f"egt{i}", 0.0)) for i in range(1, 5))
-        max_cht = max(float(telemetry.get(f"cht{i}", 0.0)) for i in range(1, 5))
-        oil_p = float(telemetry.get("oil_press_bar", 3.0))
-        oil_t = float(telemetry.get("oil_temp_c", 80.0))
-        rpm = float(telemetry.get("rpm", 4000.0))
-
-        # Check Redlines
-        if max_egt >= 950.0:
-            breached["egt_redline"] = max_egt
-        if max_cht >= 250.0:
-            breached["cht_redline"] = max_cht
-        if oil_p <= 1.50 and rpm > 2000.0:
-            breached["oil_press_redline"] = oil_p
-        if oil_t >= 125.0:
-            breached["oil_temp_redline"] = oil_t
-        if rpm >= 5900.0:
-            breached["rpm_redline"] = rpm
-
-        if breached:
-            return RedlineStatus.REDLINE, breached
-
-        # Check Alerts (90-95% of redline)
-        if max_egt >= 940.0:
-            breached["egt_alert"] = max_egt
-        if max_cht >= 240.0:
-            breached["cht_alert"] = max_cht
-        if oil_p <= 1.80 and rpm > 2000.0:
-            breached["oil_press_alert"] = oil_p
-        if oil_t >= 118.0:
-            breached["oil_temp_alert"] = oil_t
-
-        if breached:
-            return RedlineStatus.ALERT, breached
-
-        # Check Cautions
-        if max_egt >= 880.0:
-            breached["egt_caution"] = max_egt
-        if max_cht >= 200.0:
-            breached["cht_caution"] = max_cht
-        if oil_p <= 2.20 and rpm > 2000.0:
-            breached["oil_press_caution"] = oil_p
-        if oil_t >= 110.0:
-            breached["oil_temp_caution"] = oil_t
-
-        if breached:
-            return RedlineStatus.CAUTION, breached
-
-        return RedlineStatus.NORMAL, {}
+        """Delegates redline evaluation to the single source of truth in HealthStateEngine."""
+        return self.health_engine.check_redlines(telemetry)
 
     def process(self, telemetry: Dict[str, Any], dt: float = 0.1) -> DigitalTwinState:
         """
@@ -339,7 +294,9 @@ class DigitalTwinRuntime:
         # ---------------------------------------------------------------------
         # 4. REDLINE / PHYSICAL BOUNDARY MONITOR
         # ---------------------------------------------------------------------
-        redline_stat, redline_details = self.check_redlines(telemetry)
+        redline_stat, redline_details = self.health_engine.check_redlines(telemetry)
+        if redline_stat != RedlineStatus.NORMAL:
+            self.total_redline_events += 1
         if redline_stat in (RedlineStatus.ALERT, RedlineStatus.REDLINE) and self.first_redline_time is None:
             self.first_redline_time = t_sim
 
@@ -347,16 +304,20 @@ class DigitalTwinRuntime:
         # 5. FAULT DISCRIMINATION (MULTIVARIATE PHYSICS COUPLING)
         # ---------------------------------------------------------------------
         pred_state = MLPredictionState()
+        classif = {}
         try:
             classif = self.discriminator.classify_anomaly(det_out)
+            is_plant_fault = (classif.get("classification") == "PLANT_FAULT")
             raw_sub = classif.get("fault_subtype", "NONE")
             pred_state.fault_type = raw_sub.lower() if raw_sub != "NONE" else "nominal"
             pred_state.fault_subtype = raw_sub
             pred_state.fault_confidence = float(classif.get("confidence", 1.0))
             pred_state.fault_location = classif.get("fault_location", "NONE")
-            if pred_state.fault_type != "nominal" and self.first_alert_time is None:
-                self.first_alert_time = t_sim
-                self.detected_fault_type = pred_state.fault_type
+            if pred_state.fault_type != "nominal":
+                if self.first_alert_time is None:
+                    self.first_alert_time = t_sim
+                if self.detected_fault_type in ("nominal", "general_degradation") or (is_plant_fault and self.detected_fault_type == "sensor_drift"):
+                    self.detected_fault_type = pred_state.fault_type
         except Exception as e:
             pred_state.fault_type = "UNKNOWN"
             pred_state.error_message = f"Fault discriminator failure: {e}"
@@ -405,91 +366,42 @@ class DigitalTwinRuntime:
         # 8. DETERMINISTIC ENGINE HEALTH STATE
         # ---------------------------------------------------------------------
         is_plant_fault = (classif.get("classification") == "PLANT_FAULT")
-        if redline_stat == RedlineStatus.REDLINE:
-            eng_state = EngineHealthState.CRITICAL
-        elif redline_stat == RedlineStatus.ALERT and is_plant_fault:
-            eng_state = EngineHealthState.CRITICAL
-        elif pred_state.rul_hours is not None and pred_state.rul_hours <= 5.0 and is_plant_fault:
-            eng_state = EngineHealthState.CRITICAL
-        elif res_status in (ResidualStatus.ALERT, ResidualStatus.CAUTION) or pred_state.fault_type != "nominal":
-            eng_state = EngineHealthState.DEGRADED
-        else:
-            eng_state = EngineHealthState.HEALTHY
-
+        eng_state = self.health_engine.determine_health_state(
+            telemetry_quality=quality,
+            redline_status=redline_stat,
+            residual_status=res_status,
+            fault_type=pred_state.fault_type,
+            is_plant_fault=is_plant_fault,
+            rul_hours=pred_state.rul_hours
+        )
         self.state_counts[eng_state] += 1
 
         # ---------------------------------------------------------------------
         # 9. SIMULATION HEALTH INDEX [0.0, 1.0] (NOT CERTIFIED SAFETY PROBABILITY)
         # ---------------------------------------------------------------------
-        if eng_state == EngineHealthState.HEALTHY:
-            health_idx = max(0.92, 1.0 - 0.05 * norm_res_mag)
-        elif eng_state == EngineHealthState.DEGRADED:
-            if pred_state.fault_type == "sensor_drift":
-                health_idx = 0.82  # Sensor defect does not mechanically degrade powertrain
-            else:
-                # Severity-proportional mechanical degradation index
-                health_idx = max(0.20, 0.75 - 0.35 * min(1.5, norm_res_mag))
-        elif eng_state == EngineHealthState.CRITICAL:
-            health_idx = max(0.02, 0.18 - 0.10 * (1.0 if redline_stat == RedlineStatus.REDLINE else 0.5))
-        else:
-            health_idx = None
+        health_idx = self.health_engine.calculate_health_score(
+            engine_state=eng_state,
+            fault_type=pred_state.fault_type,
+            norm_residual_magnitude=norm_res_mag,
+            redline_status=redline_stat
+        )
 
         # ---------------------------------------------------------------------
         # 10. EVIDENCE-BASED EXPLANATION GENERATION
         # ---------------------------------------------------------------------
-        evidence_list = []
-        indicators = []
-        contribs = {}
-
-        if pred_state.fault_type == "injector_clog":
-            dominant_cyl = det_out.get("affected_egt_cylinder", 1)
-            egt_rise = signed_res.get(f"egt{dominant_cyl}", 0.0)
-            rpm_droop = signed_res.get("rpm", 0.0)
-            summary = (f"Combustion lean-burn degradation detected on Cylinder {dominant_cyl}. "
-                       f"Thermal divergence accompanied by shaft torque droop.")
-            evidence_list.append(f"Cylinder {dominant_cyl} EGT residual diverged by +{egt_rise:.1f}°C (Threshold: 28.0°C)")
-            evidence_list.append(f"Correlated crankshaft speed deficit of {rpm_droop:.1f} RPM confirms physical power loss")
-            indicators.append(f"cylinder_unbalance: +{egt_rise:.1f}C")
-            indicators.append(f"shaft_torque_deficit: {rpm_droop:.1f} RPM")
-            contribs["egt_residual"] = round(max_egt_r, 1)
-            contribs["rpm_droop"] = round(abs(rpm_droop), 1)
-
-        elif pred_state.fault_type == "oil_leak":
-            oil_p_loss = -signed_res.get("oil_press_bar", 0.0)
-            oil_t_rise = signed_res.get("oil_temp_c", 0.0)
-            summary = "Hydraulic circuit pressure collapse with concurrent hydrodynamic friction heating."
-            evidence_list.append(f"Oil pressure dropped by {oil_p_loss:.2f} bar below expected continuous regulation")
-            evidence_list.append(f"Oil sump temperature increased by +{oil_t_rise:.1f}°C due to boundary lubrication loss")
-            indicators.append(f"pressure_collapse: -{oil_p_loss:.2f} bar")
-            indicators.append(f"friction_heating: +{oil_t_rise:.1f}C")
-            contribs["oil_pressure_loss"] = round(oil_p_loss, 2)
-            contribs["oil_temperature_rise"] = round(oil_t_rise, 1)
-
-        elif pred_state.fault_type == "cooling_duct_blockage":
-            summary = "Convective cooling airflow restriction causing multi-cylinder thermal accumulation."
-            evidence_list.append(f"Global CHT residual increased to +{max_cht_r:.1f}°C across multiple cylinders")
-            indicators.append(f"convective_deficit_cht: +{max_cht_r:.1f}C")
-            contribs["cht_residual"] = round(max_cht_r, 1)
-
-        elif pred_state.fault_type == "sensor_drift":
-            summary = "Instrument calibration defect: isolated transducer drift without physical engine coupling."
-            evidence_list.append(f"Transducer residual diverged (+{max_egt_r:.1f}°C), but shaft RPM droop is negligible")
-            evidence_list.append("Neighboring cylinders and oil thermodynamics remain strictly nominal")
-            indicators.append("isolated_divergence: true")
-            indicators.append("physical_cross_coupling: false")
-            contribs["isolated_sensor_residual"] = round(max_egt_r, 1)
-
-        else:
-            summary = "Nominal operation. All physics residuals within 3-sigma expected envelope."
-            if quality_errors:
-                evidence_list.extend(quality_errors)
-
-        explanation = Explanation(
-            summary=summary,
-            evidence=evidence_list,
-            feature_contributions=contribs,
-            physics_indicators=indicators
+        explanation = generate_explanation(
+            fault_type=pred_state.fault_type,
+            fault_subtype=pred_state.fault_subtype,
+            fault_location=pred_state.fault_location,
+            signed_residuals=signed_res,
+            ewma_residuals=ewma_res,
+            detector_output=det_out,
+            redline_status=redline_stat.value,
+            redline_details=redline_details
         )
+        if quality_errors:
+            for q_err in quality_errors:
+                explanation.evidence.append(EvidenceItem("telemetry_warning", 0.0, "", q_err))
 
         proc_ms = (time.perf_counter() - t_start) * 1000.0
         self.latencies_ms.append(proc_ms)
@@ -504,7 +416,7 @@ class DigitalTwinRuntime:
             cycle_id=cycle,
             telemetry_status=quality,
             engine_state=eng_state,
-            health_score=round(health_idx, 3) if health_idx is not None else None,
+            health_score=health_idx,
             fault_type=pred_state.fault_type,
             fault_confidence=pred_state.fault_confidence,
             rul_hours=pred_state.rul_hours,
@@ -537,7 +449,7 @@ class DigitalTwinRuntime:
             "frames_received": self.total_frames_received,
             "frames_processed": self.total_frames_processed,
             "invalid_frames": self.total_invalid_frames,
-            "sequence_gaps": self.total_sequence_gaps,
+            "dropped_frames": self.total_sequence_gaps,
             "latency_ms": {
                 "mean": round(float(np.mean(lats)), 2),
                 "p95": round(float(np.percentile(lats, 95)), 2),
@@ -550,44 +462,41 @@ class DigitalTwinRuntime:
             "first_alert_time_sec": round(self.first_alert_time, 2) if self.first_alert_time is not None else None,
             "first_redline_time_sec": round(self.first_redline_time, 2) if self.first_redline_time is not None else None,
             "early_warning_lead_time_sec": round(lead_time, 2) if lead_time is not None else None,
+            "redline_events": self.total_redline_events,
             "min_rul_hours": round(self.min_rul_hours, 2) if self.min_rul_hours is not None else None
         }
 
     def format_mission_summary(self) -> str:
-        """Formats the terminal mission summary block."""
+        """Formats the terminal mission summary block matching Section 21 specification."""
         s = self.get_mission_summary()
         lat = s["latency_ms"]
         sc = s["state_counts"]
-        first_alert_str = f"{s['first_alert_time_sec']:.1f}s" if s['first_alert_time_sec'] is not None else "None (Nominal)"
-        first_redline_str = f"{s['first_redline_time_sec']:.1f}s" if s['first_redline_time_sec'] is not None else "None (Safe Operation)"
+        first_det_str = f"{s['first_alert_time_sec']:.1f} s" if s['first_alert_time_sec'] is not None else "None"
+        min_rul_str = f"{s['min_rul_hours']:.2f} h" if s['min_rul_hours'] is not None else "N/A"
 
         lines = [
-            "=" * 75,
-            "DIGITAL TWIN REAL-TIME MISSION EXECUTION SUMMARY",
-            "=" * 75,
-            f"Frames Received:       {s['frames_received']}",
-            f"Frames Processed:      {s['frames_processed']}",
-            f"Invalid Frames:        {s['invalid_frames']}",
-            f"Sequence Gaps:         {s['sequence_gaps']}",
+            "========================================================",
+            "DIGITAL TWIN MISSION SUMMARY",
+            "========================================================",
             "",
-            "Processing Latency:",
-            f"  Mean Latency:        {lat['mean']:.2f} ms",
-            f"  P95 Latency:         {lat['p95']:.2f} ms",
-            f"  Max Latency:         {lat['max']:.2f} ms",
+            f"Frames received      : {s['frames_received']}",
+            f"Frames processed     : {s['frames_processed']}",
+            f"Invalid frames       : {s['invalid_frames']}",
+            f"Dropped frames       : {s['dropped_frames']}",
             "",
-            "Operational Health Distribution:",
-            f"  HEALTHY Frames:      {sc['HEALTHY']} ({sc['HEALTHY']/max(1, s['frames_processed'])*100:.1f}%)",
-            f"  DEGRADED Frames:     {sc['DEGRADED']} ({sc['DEGRADED']/max(1, s['frames_processed'])*100:.1f}%)",
-            f"  CRITICAL Frames:     {sc['CRITICAL']} ({sc['CRITICAL']/max(1, s['frames_processed'])*100:.1f}%)",
-            f"  UNKNOWN Frames:      {sc['UNKNOWN']} ({sc['UNKNOWN']/max(1, s['frames_processed'])*100:.1f}%)",
+            f"Mean latency         : {lat['mean']:.1f} ms",
+            f"P95 latency          : {lat['p95']:.1f} ms",
+            f"Max latency          : {lat['max']:.1f} ms",
             "",
-            f"Diagnosed Fault:       {s['fault_detected'].upper()}",
-            f"First Alert Time:      {first_alert_str}",
-            f"First Redline Breach:  {first_redline_str}",
+            f"HEALTHY frames       : {sc.get('HEALTHY', 0)}",
+            f"DEGRADED frames      : {sc.get('DEGRADED', 0)}",
+            f"CRITICAL frames      : {sc.get('CRITICAL', 0)}",
+            "",
+            f"Fault detected       : {s['fault_detected']}",
+            f"First detection      : {first_det_str}",
+            "",
+            f"Redline events       : {s['redline_events']}",
+            f"Minimum RUL estimate : {min_rul_str}",
+            "========================================================"
         ]
-        if s["early_warning_lead_time_sec"] is not None:
-            lines.append(f"Early Warning Margin:  +{s['early_warning_lead_time_sec']:.1f} seconds BEFORE critical limit breach!")
-        if s["min_rul_hours"] is not None:
-            lines.append(f"Minimum Safe RUL:      {s['min_rul_hours']:.1f} hours")
-        lines.append("=" * 75)
         return "\n".join(lines)

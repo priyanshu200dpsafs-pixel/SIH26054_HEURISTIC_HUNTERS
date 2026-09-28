@@ -20,55 +20,27 @@ SCIENTIFIC INTEGRITY NOTICE:
 """
 
 import json
-from enum import Enum
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional
 
-
-class EngineHealthState(str, Enum):
-    """Deterministic high-level engine operational state."""
-    HEALTHY = "HEALTHY"
-    DEGRADED = "DEGRADED"
-    CRITICAL = "CRITICAL"
-    UNKNOWN = "UNKNOWN"
-
-
-class TelemetryQuality(str, Enum):
-    """Quality and integrity of incoming telemetry frame."""
-    VALID = "VALID"
-    DEGRADED = "DEGRADED"
-    INVALID = "INVALID"
+from digital_twin.health_state import (
+    EngineHealthState,
+    TelemetryQuality,
+    RedlineStatus,
+    ResidualStatus
+)
+from digital_twin.explanation import Explanation
 
 
-class RedlineStatus(str, Enum):
-    """Physical engine boundary proximity status."""
-    NORMAL = "NORMAL"
-    CAUTION = "CAUTION"
-    ALERT = "ALERT"
-    REDLINE = "REDLINE"
-
-
-class ResidualStatus(str, Enum):
-    """Statistical anomaly detector status."""
-    NORMAL = "NORMAL"
-    CAUTION = "CAUTION"
-    ALERT = "ALERT"
-
-
-@dataclass
-class Explanation:
-    """
-    Evidence-based explainable diagnostic record.
-    Generated strictly from actual observed physics residuals and coupling metrics.
-    No generative LLM or fabricated justifications.
-    """
-    summary: str = "Nominal operation. All physics residuals within 3-sigma expected envelope."
-    evidence: List[str] = field(default_factory=list)
-    feature_contributions: Dict[str, float] = field(default_factory=dict)
-    physics_indicators: List[str] = field(default_factory=list)
-
-    def to_dict(self) -> Dict[str, Any]:
-        return asdict(self)
+def _safe_float(val: Any) -> Optional[float]:
+    """Helper to convert values safely to rounded float or None."""
+    if val is None:
+        return None
+    try:
+        f = float(val)
+        return round(f, 2)
+    except (ValueError, TypeError):
+        return None
 
 
 @dataclass
@@ -144,37 +116,18 @@ class MLPredictionState:
         return asdict(self)
 
 
-def _safe_float(val: Any) -> Any:
-    """Converts numpy numbers and objects to json-safe Python types."""
-    if val is None:
-        return None
-    try:
-        import numpy as np
-        if isinstance(val, (np.floating, float)):
-            return round(float(val), 3)
-        if isinstance(val, (np.integer, int)):
-            return int(val)
-        if isinstance(val, np.ndarray):
-            return [_safe_float(x) for x in val]
-    except ImportError:
-        pass
-    if isinstance(val, float):
-        return round(val, 3)
-    return val
-
-
 @dataclass
 class DigitalTwinState:
     """
-    Canonical, unified runtime representation of the Aero Piston Engine Digital Twin.
-    Produced once per telemetry cycle (10 Hz nominal).
+    Canonical, unified runtime state produced by DigitalTwinRuntime for every cycle.
+    Provides complete structured data across telemetry, physics, ML, and health.
     """
-    # 1. Identification & Timing
-    timestamp: float
-    sequence_number: int
-    cycle_id: int
+    # 1. Temporal & Sequence Identity
+    timestamp: float = 0.0
+    sequence_number: int = 0
+    cycle_id: int = 0
 
-    # 2. Overall Status
+    # 2. Operational Health & Telemetry Status
     telemetry_status: TelemetryQuality = TelemetryQuality.VALID
     engine_state: EngineHealthState = EngineHealthState.HEALTHY
     health_score: Optional[float] = 1.0  # Simulation health index [0.0, 1.0]
@@ -223,7 +176,7 @@ class DigitalTwinState:
             "early_warning": bool(self.early_warning),
             "redline_status": str(self.redline_status),
             "redline_details": self.redline_details,
-            "explanation": self.explanation.to_dict(),
+            "explanation": self.explanation.to_dict() if hasattr(self.explanation, "to_dict") else asdict(self.explanation),
             "telemetry": self.telemetry.to_dict(),
             "physics": self.physics.to_dict(),
             "predictions": self.predictions.to_dict(),
@@ -237,31 +190,64 @@ class DigitalTwinState:
 
     def format_terminal_card(self) -> str:
         """
-        Formats a clean, multi-line diagnostic telemetry card for terminal display.
+        Formats the canonical diagnostic terminal card as specified in Phase 3B.
         """
-        conf_str = f"{self.fault_confidence * 100:.0f}%" if self.fault_confidence is not None else "N/A"
-        rul_str = f"{self.rul_hours:.1f}h" if self.rul_hours is not None else "N/A"
-        q10_str = f"{self.rul_q10_hours:.1f}" if self.rul_q10_hours is not None else "N/A"
-        q90_str = f"{self.rul_q90_hours:.1f}" if self.rul_q90_hours is not None else "N/A"
-        health_str = f"{self.health_score * 100:.0f}%" if self.health_score is not None else "N/A"
-        warn_str = "ACTIVE" if self.early_warning else "OFF"
+        rul_str = f"{self.rul_hours:.2f} h" if self.rul_hours is not None else "N/A"
+        if self.rul_q10_hours is not None and self.rul_q90_hours is not None:
+            unc_str = f"[{self.rul_q10_hours:.2f}, {self.rul_q90_hours:.2f}] h"
+        else:
+            unc_str = "[N/A, N/A] h"
+
+        eng_state_val = self.engine_state.value if hasattr(self.engine_state, "value") else str(self.engine_state)
+        telem_stat_val = self.telemetry_status.value if hasattr(self.telemetry_status, "value") else str(self.telemetry_status)
+        redline_val = self.redline_status.value if hasattr(self.redline_status, "value") else str(self.redline_status)
+        
+        # Display ANOMALY if anomaly detected or status is CAUTION/ALERT/ANOMALY
+        raw_res = self.residual_status.value if hasattr(self.residual_status, "value") else str(self.residual_status)
+        if raw_res in ("CAUTION", "ALERT", "ANOMALY") or (hasattr(self.physics, "anomaly_detected") and self.physics.anomaly_detected):
+            res_val = "ANOMALY"
+        else:
+            res_val = "NORMAL"
 
         lines = [
-            f"[{self.timestamp:6.1f}s | Seq:{self.sequence_number:05d} | Cyc:{self.cycle_id:04d}] "
-            f"STATE: {self.engine_state.value:<8s} | FAULT: {self.fault_type.upper():<16s} "
-            f"(Conf: {conf_str})",
-            f"  RPM: {self.telemetry.rpm:4.0f} | Throttle: {self.telemetry.throttle_pct:4.1f}% | "
-            f"EGTmax: {self.telemetry.max_egt:5.1f} C | CHTmax: {self.telemetry.max_cht:5.1f} C | "
-            f"Oil: {self.telemetry.oil_press_bar:4.2f}b / {self.telemetry.oil_temp_c:4.1f} C",
-            f"  RESIDUAL: {self.residual_status:<7s} (Peak: {self.residual_magnitude:4.1f}) | "
-            f"REDLINE: {self.redline_status:<7s} | EARLY WARNING: {warn_str}",
-            f"  SIM RUL: {rul_str:<6s} [{q10_str}, {q90_str}h] | "
-            f"HEALTH INDEX: {health_str} | Latency: {self.processing_time_ms:.1f}ms"
+            "========================================================",
+            "             REAL-TIME DIGITAL TWIN",
+            "========================================================",
+            "",
+            f"TIME: {self.timestamp:.1f} s",
+            f"FRAME: {self.sequence_number}",
+            "",
+            f"ENGINE STATE : {eng_state_val}",
+            f"FAULT        : {self.fault_type.upper()}",
+            "",
+            f"RUL          : {rul_str}",
+            f"UNCERTAINTY  : {unc_str}",
+            "",
+            f"RESIDUAL     : {res_val}",
+            f"REDLINE      : {redline_val}",
+            "",
+            "EVIDENCE:"
         ]
-        if self.explanation.evidence:
-            lines.append(f"  WHY: {self.explanation.summary}")
-            for ev in self.explanation.evidence[:3]:
-                lines.append(f"    - {ev}")
+
+        if hasattr(self.explanation, "evidence") and self.explanation.evidence:
+            for ev in self.explanation.evidence[:4]:
+                if isinstance(ev, dict) or hasattr(ev, "get"):
+                    feat_name = ev.get("feature", "feature")
+                    val = ev.get("value", 0.0)
+                    unit = ev.get("unit", "")
+                    sign = "+" if isinstance(val, (int, float)) and val > 0 else ""
+                    lines.append(f"  {feat_name:<14s}: {sign}{val} {unit}")
+                else:
+                    lines.append(f"  {str(ev)}")
+        else:
+            lines.append("  None (All physics residuals within 3-sigma expected envelope)")
+
+        lines.extend([
+            "",
+            f"TELEMETRY    : {telem_stat_val}",
+            f"LATENCY      : {self.processing_time_ms:.1f} ms",
+            "========================================================"
+        ])
         return "\n".join(lines)
 
     def format_console_line(self) -> str:

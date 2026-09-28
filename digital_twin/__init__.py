@@ -14,6 +14,9 @@ from digital_twin.state import (
     MLPredictionState,
     DigitalTwinState,
 )
+from digital_twin.health_state import HealthStateEngine
+from digital_twin.explanation import EvidenceItem, generate_explanation
+from digital_twin.runtime import DigitalTwinRuntime
 
 __all__ = [
     "EngineHealthState",
@@ -21,8 +24,12 @@ __all__ = [
     "RedlineStatus",
     "ResidualStatus",
     "Explanation",
+    "EvidenceItem",
+    "generate_explanation",
     "MeasuredTelemetry",
     "PhysicsDerivedState",
     "MLPredictionState",
     "DigitalTwinState",
+    "HealthStateEngine",
+    "DigitalTwinRuntime",
 ]
