@@ -243,20 +243,125 @@ python run_digital_twin.py \
 ### Running the Test Suites
 
 ```bash
-# Phase 3B Runtime Unit Tests (Tests A through I)
-python digital_twin/test_runtime.py
+# Phase 1 Plant Model Physics & Validation
+python plant_model/test_plant.py
+python plant_model/validate_phase1.py
 
-# Phase 3B Full End-to-End Pipeline Integration Tests
+# Phase 2 CAN Bus & Telemetry Transport Verification
+python can_bus/test_can_roundtrip.py
+python can_bus/test_end_to_end_stream.py
+
+# Phase 3A PHM Science & RUL Rebuild Validation
+python ml_layer/validate_phase3.py
+python ml_layer/validate_phm.py
+
+# Phase 3B Runtime Unit & End-to-End Pipeline Tests
+python digital_twin/test_runtime.py
 python tests/test_digital_twin_end_to_end.py
+
+# Phase 4 Dashboard & Visualization Test Suite (Tests A through O)
+python tests/test_dashboard.py
+
+# Phase 4 10 Hz Real-Time Performance Benchmark (300 cycles)
+python tests/benchmark_phase4.py
+```
+
+---
+
+## Phase 4: Mission Control Dashboard & Real-Time Visualization
+
+Phase 4 introduces a real-time, aerospace-grade Mission Control Ground Station interface and Historical Mission Replay engine built on Streamlit.
+
+### Core Architectural Principle
+The dashboard is strictly an **OBSERVATION & SIMULATION SURFACE** attached after the canonical runtime state:
+
+```text
+                  SIMULATION / REPLAY
+                          │
+                          ▼
+                      TELEMETRY
+                          │
+                          ▼
+                   EXISTING CAN/UDP
+                          │
+                          ▼
+                   TELEMETRY EVENT
+                          │
+                          ▼
+               ┌──────────────────────┐
+               │ DIGITAL TWIN RUNTIME │
+               │                      │
+               │ Physics              │
+               │ Residuals            │
+               │ Fault Diagnosis      │
+               │ RUL                  │
+               │ Uncertainty          │
+               │ Health               │
+               │ Redlines             │
+               │ Explainability       │
+               └──────────┬───────────┘
+                          │
+                          ▼
+                  DIGITAL TWIN STATE
+                          │
+                 ┌────────┴────────┐
+                 ▼                 ▼
+             DASHBOARD        JSON EXPORT
+                 │
+           ┌─────┼───────────┐
+           ▼     ▼           ▼
+        Health  RUL      Explainability
+           │     │           │
+           └─────┼───────────┘
+                 ▼
+            MISSION CONTROL
+```
+
+### Dashboard Capabilities
+
+1. **Primary Simulation Health Card:**
+   - Real-time engine health state (`HEALTHY`, `DEGRADED`, `CRITICAL`, `UNKNOWN`).
+   - Simulation Health Index score (0–100), active powerplant fault, and CAN sequence integrity.
+2. **Authoritative Engine Telemetry:**
+   - Crankshaft RPM, throttle command, fuel flow, 4-cylinder EGTs, 4-cylinder CHTs, oil pressure, oil temperature, altitude, and airspeed.
+3. **Prognostics & RUL Uncertainty Panel:**
+   - Point RUL estimate, calibrated [Q10, Q90] uncertainty intervals, and damage degradation classification.
+   - Transparent Category C hybrid heuristic/synthetic degradation disclosure.
+4. **Physics Observer Residuals:**
+   - Live departure tracking for EGT, CHT, oil pressure, and shaft RPM against 3-sigma boundaries and EWMA anomaly flags.
+5. **Physical Operating Boundaries (Redlines):**
+   - Authoritative Rotax 912 limits (`NORMAL`, `CAUTION`, `ALERT`, `REDLINE`) for EGT (880/940/950°C), CHT (200/240/250°C), oil pressure (2.2/1.8/1.5 bar), oil temp (110/118/125°C), and RPM (5900).
+6. **Fault Isolation & Diagnosis:**
+   - Multi-channel coupling discriminator isolating plant anomalies (injector clog, oil leak, cooling blockage) from instrument faults (thermocouple sensor drift).
+7. **Grounded Explainability:**
+   - Zero LLM generation. 100% deterministic, machine-readable causal evidence items (`EvidenceItem`) backed by physics residuals and cross-channel coupling.
+8. **Fault Injection Simulation:**
+   - User-controlled live injection of nominal and degraded conditions (injector clog, oil leak, sensor drift, cooling blockage) directly through the authentic `Plant -> CAN -> UDP -> Decoder -> Runtime` pipeline.
+9. **Historical Mission Replay:**
+   - 100% read-only historical playback of the 150 dataset flight sorties (`data/*.csv`) through the authentic `DigitalTwinRuntime`.
+10. **Canonical JSON State Export:**
+    - Live download and interactive inspection of the latest `DigitalTwinState` JSON record.
+
+### Launching the Dashboard
+
+```bash
+# 1. Ensure dependencies are installed
+pip install -r requirements.txt
+
+# 2. Launch Mission Control Dashboard
+streamlit run dashboard/app.py
 ```
 
 ### Scientific Honesty & Known Limitations
 
-1. **Simulation RUL Target Disclosure:**
-   The RUL target in this prototype represents a **hybrid heuristic/synthetic degradation countdown** calibrated to simulated thermal, mechanical, and cumulative operating stress. It must **NOT** be claimed as certified or empirically validated remaining engine life.
+1. **Simulation RUL Target Disclosure (Category C):**
+   The RUL target in this prototype represents a **Category C — Hybrid Heuristic/Synthetic Degradation Countdown** calibrated to simulated thermal, mechanical, and cumulative operating stress. It is a model-based estimate under simulated conditions; it is **NOT** empirical metallurgical wear-life data or certified component retirement life.
 2. **Cooling Duct Blockage Limitation:**
    As verified in Phase 3A held-out evaluation, cooling duct blockage exhibits weak CHT coupling under typical UAV loiter cruise airflows (residual magnitude remains below caution thresholds). The system documents this known limitation rather than fabricating false certainty.
-3. **Simulation-Only Environment:**
-   This system is an engineering research prototype running over virtual simulation transports. It is **not** certified for autonomous aircraft flight control, safety-critical decision making, or real aircraft dispatch without formal DO-178C / DO-254 qualification.
+3. **Software Engineering Prototype:**
+   This system is an engineering research prototype running over simulated engine and telemetry transports. It is **not** certified flight software (DO-178C / DO-254) and does not issue autonomous aircraft flight-control, actuator, return-to-base, or flight-termination commands.
 4. **No LLM / No Black-Box Hallucinations:**
    Explanations are deterministically compiled from real physics residuals, cross-channel coupling metrics, and redline checks. No generative language models or ungrounded statistics are involved.
+5. **Strict Dataset & Model Immutability:**
+   The dashboard and replay engine strictly adhere to read-only semantics. No writes or retrainings occur on `data/` or `ml_layer/models/`.
+

@@ -15,3 +15,6 @@ matplotlib>=3.7.0
 # Avionics CAN Bus Protocol
 python-can>=4.2.0
 cantools>=39.0.0
+
+# Mission Control Dashboard (Phase 4)
+streamlit>=1.30.0
